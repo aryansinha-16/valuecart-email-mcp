@@ -21,7 +21,7 @@ if (!GMAIL_USER || !GMAIL_APP_PASSWORD || !SERVER_SECRET) {
 // ── Pooled SMTP transporter — created once at startup ─────────────────────────
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
+  port: 587,
   secure: true,
   pool: true,
   maxConnections: 5,
