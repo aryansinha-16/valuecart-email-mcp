@@ -8,9 +8,9 @@ const app = express();
 app.use(express.json());
 
 // ── Config from environment variables ──────────────────────────────────────
-const GMAIL_USER         = process.env.GMAIL_USER;          // aryan@valuecart.in
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;  // 16-char app password
-const SERVER_SECRET      = process.env.SERVER_SECRET;       // your chosen secret token
+const GMAIL_USER         = process.env.GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
+const SERVER_SECRET      = process.env.SERVER_SECRET;
 const PORT               = process.env.PORT || 3000;
 
 if (!GMAIL_USER || !GMAIL_APP_PASSWORD || !SERVER_SECRET) {
@@ -18,12 +18,33 @@ if (!GMAIL_USER || !GMAIL_APP_PASSWORD || !SERVER_SECRET) {
   process.exit(1);
 }
 
-// ── Health check ────────────────────────────────────────────────────────────
-app.get("/", (_req, res) => {
-  res.json({ status: "ok", service: "Valuecart Email MCP Server", version: "1.0.0" });
+// ── SMTP transporter — created ONCE at startup, reused for every email ──────
+// Pool keeps connections alive so each send_email call takes ~1s not ~30s
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  pool: true,          // reuse connections across calls
+  maxConnections: 5,
+  maxMessages: 100,
+  auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
 });
 
-// ── MCP endpoint (secret in path for security) ─────────────────────────────
+// Verify SMTP connection on startup so we know it works before any request arrives
+transporter.verify((err) => {
+  if (err) console.error("❌ SMTP connection failed:", err.message);
+  else     console.log("✅ SMTP connection ready");
+});
+
+// ── Keep-alive ping endpoint (hit this every 5 min from UptimeRobot) ────────
+app.get("/ping", (_req, res) => res.send("pong"));
+
+// ── Health check ─────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => {
+  res.json({ status: "ok", service: "Valuecart Email MCP Server", version: "1.1.0" });
+});
+
+// ── MCP endpoint (secret in path for security) ───────────────────────────────
 app.post("/mcp/:secret", async (req, res) => {
   if (req.params.secret !== SERVER_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -31,10 +52,10 @@ app.post("/mcp/:secret", async (req, res) => {
 
   const mcpServer = new McpServer({
     name: "valuecart-email-sender",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
-  // ── Tool: send_email ──────────────────────────────────────────────────────
+  // ── Tool: send_email ────────────────────────────────────────────────────────
   mcpServer.tool(
     "send_email",
     "Send an email via Gmail SMTP on behalf of Valuecart Automation",
@@ -47,13 +68,6 @@ app.post("/mcp/:secret", async (req, res) => {
     },
     async ({ to, subject, body_html, body_text, cc }) => {
       try {
-        const transporter = nodemailer.createTransport({
-          host: "smtp.gmail.com",
-          port: 465,
-          secure: true,
-          auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
-        });
-
         const plainText = body_text
           ?? body_html.replace(/<br\s*\/?>/gi, "\n")
                       .replace(/<\/?(p|div|h[1-6])[^>]*>/gi, "\n")
@@ -63,23 +77,27 @@ app.post("/mcp/:secret", async (req, res) => {
                       .trim();
 
         const mail = {
-          from:    `Valuecart Automation <${GMAIL_USER}>`,
+          from: `Valuecart Automation <${GMAIL_USER}>`,
           to,
           subject,
-          html:    body_html,
-          text:    plainText,
+          html: body_html,
+          text: plainText,
         };
         if (cc) mail.cc = cc;
 
+        // Reuses the pooled SMTP connection — no reconnect overhead
         const info = await transporter.sendMail(mail);
+
+        console.log(`📧 Sent → ${to} | ${subject} | ${info.messageId}`);
 
         return {
           content: [{
             type: "text",
-            text: `✅ Email sent successfully\n   To: ${to}${cc ? `\n   CC: ${cc}` : ""}\n   Subject: ${subject}\n   Message-ID: ${info.messageId}`,
+            text: `✅ Email sent\n   To: ${to}${cc ? `\n   CC: ${cc}` : ""}\n   Subject: ${subject}\n   Message-ID: ${info.messageId}`,
           }],
         };
       } catch (err) {
+        console.error(`❌ Send failed → ${to}: ${err.message}`);
         return {
           content: [{ type: "text", text: `❌ Send failed: ${err.message}` }],
           isError: true,
@@ -88,14 +106,14 @@ app.post("/mcp/:secret", async (req, res) => {
     }
   );
 
-  // ── Wire up transport ─────────────────────────────────────────────────────
+  // ── Wire up MCP transport ───────────────────────────────────────────────────
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => transport.close());
   await mcpServer.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });
 
-// ── Start ────────────────────────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`✅ Valuecart Email MCP Server running on port ${PORT}`);
 });
