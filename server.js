@@ -1,41 +1,28 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import nodemailer from "nodemailer";
+import sgMail from "@sendgrid/mail";
 import { z } from "zod";
 
 const app = express();
 app.use(express.json());
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const GMAIL_USER         = process.env.GMAIL_USER;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
-const SERVER_SECRET      = process.env.SERVER_SECRET;
-const PORT               = process.env.PORT || 3000;
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+const FROM_EMAIL       = process.env.FROM_EMAIL || "aryan@valuecart.in";
+const FROM_NAME        = process.env.FROM_NAME  || "Valuecart Automation";
+const SERVER_SECRET    = process.env.SERVER_SECRET;
+const PORT             = process.env.PORT || 3000;
 
-if (!GMAIL_USER || !GMAIL_APP_PASSWORD || !SERVER_SECRET) {
-  console.error("❌ Missing required env vars: GMAIL_USER, GMAIL_APP_PASSWORD, SERVER_SECRET");
+if (!SENDGRID_API_KEY || !SERVER_SECRET) {
+  console.error("❌ Missing required env vars: SENDGRID_API_KEY, SERVER_SECRET");
   process.exit(1);
 }
 
-// ── Pooled SMTP transporter — created once at startup ─────────────────────────
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: true,
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
-  auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
-});
+sgMail.setApiKey(SENDGRID_API_KEY);
+console.log("✅ SendGrid ready");
 
-transporter.verify((err) => {
-  if (err) console.error("❌ SMTP verify failed:", err.message);
-  else     console.log("✅ SMTP connection ready");
-});
-
-// ── Fire-and-forget sender — does NOT block the MCP response ─────────────────
-// Returns immediately to Cowork, sends in background. Logs result to Railway.
+// ── Fire-and-forget sender ────────────────────────────────────────────────────
 function dispatchEmail({ to, subject, body_html, body_text, cc }) {
   const plainText = body_text
     ?? body_html.replace(/<br\s*\/?>/gi, "\n")
@@ -45,23 +32,24 @@ function dispatchEmail({ to, subject, body_html, body_text, cc }) {
                 .replace(/\n{3,}/g, "\n\n")
                 .trim();
 
-  const mail = {
-    from: `Valuecart Automation <${GMAIL_USER}>`,
-    to, subject,
+  const msg = {
+    to,
+    from: { email: FROM_EMAIL, name: FROM_NAME },
+    subject,
     html: body_html,
     text: plainText,
   };
-  if (cc) mail.cc = cc;
+  if (cc) msg.cc = cc;
 
-  // No await — runs in background after MCP response is already returned
-  transporter.sendMail(mail)
-    .then(info => console.log(`✅ SENT → ${to} | ${subject} | ${info.messageId}`))
+  // No await — returns immediately, sends in background via HTTPS
+  sgMail.send(msg)
+    .then(() => console.log(`✅ SENT → ${to} | ${subject}`))
     .catch(err => console.error(`❌ FAILED → ${to} | ${err.message}`));
 }
 
-// ── Keep-alive (ping every 5 min from UptimeRobot) ───────────────────────────
+// ── Keep-alive & health ───────────────────────────────────────────────────────
 app.get("/ping", (_req, res) => res.send("pong"));
-app.get("/",     (_req, res) => res.json({ status: "ok", version: "1.2.0" }));
+app.get("/",     (_req, res) => res.json({ status: "ok", version: "1.3.0" }));
 
 // ── MCP endpoint ──────────────────────────────────────────────────────────────
 app.post("/mcp/:secret", async (req, res) => {
@@ -71,12 +59,12 @@ app.post("/mcp/:secret", async (req, res) => {
 
   const mcpServer = new McpServer({
     name: "valuecart-email-sender",
-    version: "1.2.0",
+    version: "1.3.0",
   });
 
   mcpServer.tool(
     "send_email",
-    "Queue an email for immediate delivery via Gmail SMTP",
+    "Send an email via SendGrid on behalf of Valuecart Automation",
     {
       to:        z.string().describe("Recipient email address(es), comma-separated"),
       subject:   z.string().describe("Email subject line"),
@@ -85,11 +73,8 @@ app.post("/mcp/:secret", async (req, res) => {
       cc:        z.string().optional().describe("CC recipients, comma-separated"),
     },
     async ({ to, subject, body_html, body_text, cc }) => {
-      // Kick off send in background — return to Cowork immediately
       dispatchEmail({ to, subject, body_html, body_text, cc });
-
       console.log(`📤 QUEUED → ${to} | ${subject}`);
-
       return {
         content: [{
           type: "text",
@@ -107,5 +92,5 @@ app.post("/mcp/:secret", async (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`✅ Valuecart Email MCP Server v1.2.0 running on port ${PORT}`);
+  console.log(`✅ Valuecart Email MCP Server v1.3.0 running on port ${PORT}`);
 });
