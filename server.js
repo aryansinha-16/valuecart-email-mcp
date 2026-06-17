@@ -1,26 +1,34 @@
   import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
   import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
   import express from "express";
-  import sgMail from "@sendgrid/mail";
   import { z } from "zod";
 
   const app = express();
   app.use(express.json());
 
   // ── Config ────────────────────────────────────────────────────────────────────
-  const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+  const ZEPTOMAIL_TOKEN  = process.env.ZEPTOMAIL_TOKEN;
+  const ZEPTOMAIL_URL    = process.env.ZEPTOMAIL_URL || "https://api.zeptomail.in/v1.1/email";
   const FROM_EMAIL       = process.env.FROM_EMAIL || "aryan@valuecart.in";
   const FROM_NAME        = process.env.FROM_NAME  || "Valuecart Automation";
   const SERVER_SECRET    = process.env.SERVER_SECRET;
   const PORT             = process.env.PORT || 3000;
 
-  if (!SENDGRID_API_KEY || !SERVER_SECRET) {
-    console.error("❌ Missing required env vars: SENDGRID_API_KEY, SERVER_SECRET");
+  if (!ZEPTOMAIL_TOKEN || !SERVER_SECRET) {
+    console.error("❌ Missing required env vars: ZEPTOMAIL_TOKEN, SERVER_SECRET");
     process.exit(1);
   }
 
-  sgMail.setApiKey(SENDGRID_API_KEY);
-  console.log("✅ SendGrid ready");
+  console.log("✅ ZeptoMail ready");
+
+  // Parse a comma-separated address string into ZeptoMail recipient objects.
+  function toRecipients(str) {
+    return str
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean)
+      .map(address => ({ email_address: { address } }));
+  }
 
   // ── Fire-and-forget sender ────────────────────────────────────────────────────
   function dispatchEmail({ to, subject, body_html, body_text, cc, attachments }) {
@@ -32,24 +40,53 @@
                   .replace(/\n{3,}/g, "\n\n")
                   .trim();
 
-    const msg = {
-      to,
-      from: { email: FROM_EMAIL, name: FROM_NAME },
+    const payload = {
+      from: { address: FROM_EMAIL, name: FROM_NAME },
+      to: toRecipients(to),
       subject,
-      html: body_html,
-      text: plainText,
+      htmlbody: body_html,
+      textbody: plainText,
     };
-    if (cc) msg.cc = cc;
-    if (attachments?.length) msg.attachments = attachments;
+    if (cc) payload.cc = toRecipients(cc);
 
-    sgMail.send(msg)
-      .then(() => console.log(`✅ SENT → ${to} | ${subject}`))
+    // ZeptoMail splits regular attachments from inline (cid) images.
+    if (attachments?.length) {
+      const files  = [];
+      const inline = [];
+      for (const a of attachments) {
+        if (a.disposition === "inline" && a.content_id) {
+          inline.push({ content: a.content, mime_type: a.type, cid: a.content_id });
+        } else {
+          files.push({ content: a.content, mime_type: a.type, name: a.filename });
+        }
+      }
+      if (files.length)  payload.attachments  = files;
+      if (inline.length) payload.inline_images = inline;
+    }
+
+    fetch(ZEPTOMAIL_URL, {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": `Zoho-enczapikey ${ZEPTOMAIL_TOKEN}`,
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(async (resp) => {
+        if (resp.ok) {
+          console.log(`✅ SENT → ${to} | ${subject}`);
+        } else {
+          const detail = await resp.text();
+          console.error(`❌ FAILED → ${to} | ${resp.status} ${detail}`);
+        }
+      })
       .catch(err => console.error(`❌ FAILED → ${to} | ${err.message}`));
   }
 
   // ── Keep-alive & health ───────────────────────────────────────────────────────
   app.get("/ping", (_req, res) => res.send("pong"));
-  app.get("/",     (_req, res) => res.json({ status: "ok", version: "1.4.0" }));
+  app.get("/",     (_req, res) => res.json({ status: "ok", version: "1.5.0" }));
 
   // ── MCP endpoint ──────────────────────────────────────────────────────────────
   app.post("/mcp/:secret", async (req, res) => {
@@ -59,12 +96,12 @@
 
     const mcpServer = new McpServer({
       name: "valuecart-email-sender",
-      version: "1.4.0",
+      version: "1.5.0",
     });
 
     mcpServer.tool(
       "send_email",
-      "Send an email via SendGrid on behalf of Valuecart Automation",
+      "Send an email via ZeptoMail on behalf of Valuecart Automation",
       {
         to:        z.string().describe("Recipient email address(es), comma-separated"),
         subject:   z.string().describe("Email subject line"),
@@ -99,5 +136,5 @@
 
   // ── Start ─────────────────────────────────────────────────────────────────────
   app.listen(PORT, () => {
-    console.log(`✅ Valuecart Email MCP Server v1.4.0 running on port ${PORT}`);
+    console.log(`✅ Valuecart Email MCP Server v1.5.0 running on port ${PORT}`);
   });
