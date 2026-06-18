@@ -9,7 +9,7 @@
   // ── Config ────────────────────────────────────────────────────────────────────
   const ZEPTOMAIL_TOKEN  = process.env.ZEPTOMAIL_TOKEN;
   const ZEPTOMAIL_URL    = process.env.ZEPTOMAIL_URL || "https://api.zeptomail.in/v1.1/email";
-  const FROM_EMAIL       = process.env.FROM_EMAIL || "aryan@valuecart.in";
+  const FROM_EMAIL       = process.env.FROM_EMAIL || "noreply@valuecart.in";
   const FROM_NAME        = process.env.FROM_NAME  || "Valuecart Automation";
   const SERVER_SECRET    = process.env.SERVER_SECRET;
   const PORT             = process.env.PORT || 3000;
